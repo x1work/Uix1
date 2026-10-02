@@ -9,63 +9,65 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Unzip Archive
-        run: |
-          unzip -o *.zip || true
-
-      - name: Build or Package App
+      - name: Inspect and Process
         run: |
           mkdir -p Payload
-          
-          # 1. Проверяем, есть ли в архиве уже готовый .app
-          EXISTING_APP=$(find . -name "*.app" -not -path "*/build/*" | head -n 1)
-          if [ -n "$EXISTING_APP" ]; then
-            echo "Найден готовый .app: $EXISTING_APP"
-            cp -R "$EXISTING_APP" Payload/
+
+          # 1. Если загружен готовый .ipa файл
+          IPA_FILE=$(find . -maxdepth 2 -name "*.ipa" | head -n 1)
+          if [ -n "$IPA_FILE" ]; then
+            echo "Найден готовый .ipa файл: $IPA_FILE"
+            cp "$IPA_FILE" app.tipa
+            echo "Файл готов!"
+            exit 0
+          fi
+
+          # 2. Распаковываем zip архивы
+          unzip -o *.zip || true
+
+          # 3. Ищем готовый .app
+          APP_DIR=$(find . -name "*.app" -not -path "*/build/*" | head -n 1)
+          if [ -n "$APP_DIR" ]; then
+            echo "Найден готовый .app: $APP_DIR"
+            cp -R "$APP_DIR" Payload/
             zip -r app.tipa Payload/
             exit 0
           fi
 
-          # 2. Если это исходный код, ищем .xcodeproj на любой глубине
+          # 4. Ищем .xcworkspace или .xcodeproj
+          WORKSPACE=$(find . -name "*.xcworkspace" -not -path "*/.*" | head -n 1)
           PROJ=$(find . -name "*.xcodeproj" -not -path "*/.*" | head -n 1)
-          if [ -z "$PROJ" ]; then
-            echo "ОШИБКА: В архиве не найден проект .xcodeproj или файл .app!"
+
+          if [ -n "$WORKSPACE" ]; then
+            echo "Найден workspace: $WORKSPACE"
+            BUILD_ARG="-workspace \"$WORKSPACE\""
+            SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
+          elif [ -n "$PROJ" ]; then
+            echo "Найден project: $PROJ"
+            BUILD_ARG="-project \"$PROJ\""
+            SCHEME=$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
+          else
+            echo "=== СОДЕРЖИМОЕ ВАШЕГО АРХИВА ==="
+            find . -maxdepth 4
+            echo "----------------------------------------"
+            echo "ОШИБКА: Проект Xcode не найден."
             exit 1
           fi
 
-          PROJ_DIR=$(dirname "$PROJ")
-          echo "Найден проект: $PROJ"
+          echo "Сборка схемы: $SCHEME"
 
-          # Проверка и установка CocoaPods (если есть Podfile)
-          if [ -f "$PROJ_DIR/Podfile" ]; then
-            cd "$PROJ_DIR"
-            pod install || true
-            cd -
-          fi
-
-          # Определение схемы проекта
-          SCHEME=$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
-          echo "Используется схема: $SCHEME"
-
-          # Сборка проекта
-          xcodebuild clean build \
-            -project "$PROJ" \
-            -scheme "$SCHEME" \
+          eval xcodebuild clean build \
+            $BUILD_ARG \
+            -scheme \"$SCHEME\" \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_IDENTITY=\"\" \
             ENTITLEMENTS_REQUIRED=NO
 
-          # Поиск скомпилированного .app
           BUILT_APP=$(find build -name "*.app" | head -n 1)
-          if [ -z "$BUILT_APP" ]; then
-            echo "ОШИБКА: Не удалось скомпилировать .app"
-            exit 1
-          fi
-
           cp -R "$BUILT_APP" Payload/
           zip -r app.tipa Payload/
 
