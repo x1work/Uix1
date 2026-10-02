@@ -11,13 +11,43 @@ jobs:
 
       - name: Unzip Archive
         run: |
-          unzip -o *.zip
+          unzip -o *.zip || true
 
-      - name: Build
+      - name: Build or Package App
         run: |
-          PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
-          SCHEME=$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
+          mkdir -p Payload
           
+          # 1. Проверяем, есть ли в архиве уже готовый .app
+          EXISTING_APP=$(find . -name "*.app" -not -path "*/build/*" | head -n 1)
+          if [ -n "$EXISTING_APP" ]; then
+            echo "Найден готовый .app: $EXISTING_APP"
+            cp -R "$EXISTING_APP" Payload/
+            zip -r app.tipa Payload/
+            exit 0
+          fi
+
+          # 2. Если это исходный код, ищем .xcodeproj на любой глубине
+          PROJ=$(find . -name "*.xcodeproj" -not -path "*/.*" | head -n 1)
+          if [ -z "$PROJ" ]; then
+            echo "ОШИБКА: В архиве не найден проект .xcodeproj или файл .app!"
+            exit 1
+          fi
+
+          PROJ_DIR=$(dirname "$PROJ")
+          echo "Найден проект: $PROJ"
+
+          # Проверка и установка CocoaPods (если есть Podfile)
+          if [ -f "$PROJ_DIR/Podfile" ]; then
+            cd "$PROJ_DIR"
+            pod install || true
+            cd -
+          fi
+
+          # Определение схемы проекта
+          SCHEME=$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
+          echo "Используется схема: $SCHEME"
+
+          # Сборка проекта
           xcodebuild clean build \
             -project "$PROJ" \
             -scheme "$SCHEME" \
@@ -29,13 +59,17 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             ENTITLEMENTS_REQUIRED=NO
 
-      - name: Package
-        run: |
-          mkdir Payload
-          mv build/Build/Products/Release-iphoneos/*.app Payload/
+          # Поиск скомпилированного .app
+          BUILT_APP=$(find build -name "*.app" | head -n 1)
+          if [ -z "$BUILT_APP" ]; then
+            echo "ОШИБКА: Не удалось скомпилировать .app"
+            exit 1
+          fi
+
+          cp -R "$BUILT_APP" Payload/
           zip -r app.tipa Payload/
 
-      - name: Upload
+      - name: Upload TIPA
         uses: actions/upload-artifact@v4
         with:
           name: app-tipa
