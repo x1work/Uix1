@@ -9,11 +9,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Unzip Archive
+        run: |
+          unzip -o *.zip
+
       - name: Build
         run: |
+          PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -n 1)
+          SCHEME=$(xcodebuild -list -project "$PROJ" | awk '/Schemes:/{flag=1; next} /^$/{flag=0} flag' | head -n 1 | xargs)
+          
           xcodebuild clean build \
-            -project "LegendaClient.xcodeproj" \
-            -scheme "LegendaClient" \
+            -project "$PROJ" \
+            -scheme "$SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             -derivedDataPath build \
